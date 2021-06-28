@@ -171,6 +171,10 @@ where
 impl_binops_additive!(G2Projective, G2Affine);
 impl_binops_additive_specify_output!(G2Affine, G2Projective, G2Projective);
 
+// The recoding width that determines the length and size of precomputation table.
+// Tested values are in 3..8.
+const G2_WIDTH: i32 = 5;
+
 const B: Fp2 = Fp2 {
     c0: Fp::from_raw_unchecked([
         0xaa27_0000_000c_fff3,
@@ -623,11 +627,6 @@ impl_binops_additive!(G2Projective, G2Projective);
 impl_binops_multiplicative!(G2Projective, Scalar);
 impl_binops_multiplicative_mixed!(G2Affine, Scalar, G2Projective);
 
-#[inline(always)]
-fn mul_by_3b(x: Fp2) -> Fp2 {
-    x * B3
-}
-
 impl G2Projective {
     /// Returns the identity of the group: the point at infinity.
     pub fn identity() -> G2Projective {
@@ -635,6 +634,16 @@ impl G2Projective {
             x: Fp2::zero(),
             y: Fp2::one(),
             z: Fp2::zero(),
+        }
+    }
+
+    /// Multiplies a Fp2 element by the b-coefficient of the curve
+    #[inline(always)]
+    pub fn mul_by_3b(x: Fp2) -> Fp2 {
+        let t = x.mul_by_nonresidue();
+        Fp2 {
+            c0: B3.c0 * t.c0,
+            c1: B3.c1 * t.c1,
         }
     }
 
@@ -692,7 +701,7 @@ impl G2Projective {
         let z3 = z3 + z3;
         let t1 = self.y * self.z;
         let t2 = self.z.square();
-        let t2 = mul_by_3b(t2);
+        let t2 = G2Projective::mul_by_3b(t2);
         let x3 = t2 * z3;
         let y3 = t0 + t2;
         let z3 = t1 * z3;
@@ -738,10 +747,10 @@ impl G2Projective {
         let y3 = x3 - y3;
         let x3 = t0 + t0;
         let t0 = x3 + t0;
-        let t2 = mul_by_3b(t2);
+        let t2 = G2Projective::mul_by_3b(t2);
         let z3 = t1 + t2;
         let t1 = t1 - t2;
-        let y3 = mul_by_3b(y3);
+        let y3 = G2Projective::mul_by_3b(y3);
         let x3 = t4 * y3;
         let t2 = t3 * t1;
         let x3 = t2 - x3;
@@ -776,10 +785,10 @@ impl G2Projective {
         let y3 = y3 + self.x;
         let x3 = t0 + t0;
         let t0 = x3 + t0;
-        let t2 = mul_by_3b(self.z);
+        let t2 = G2Projective::mul_by_3b(self.z);
         let z3 = t1 + t2;
         let t1 = t1 - t2;
-        let y3 = mul_by_3b(y3);
+        let y3 = G2Projective::mul_by_3b(y3);
         let x3 = t4 * y3;
         let t2 = t3 * t1;
         let x3 = t2 - x3;
@@ -799,26 +808,79 @@ impl G2Projective {
         G2Projective::conditional_select(&tmp, &self, rhs.is_identity())
     }
 
-    fn multiply(&self, by: &[u8]) -> G2Projective {
+    fn regular_recoding(&self, naf: &mut [i8; 256], sc: &mut [u8; 32], w: i32) {
+        // Joux-Tunstall regular recoding algorithm for parameterized w.
+        let mask = (1 << w) - 1;
+        let len = 1 + (naf.len()-1)/(w - 1) as usize;
+
+        for i in 0..(len - 1) {
+            naf[i] = ((sc[0] & mask) as i8) - (1 << (w - 1));
+            sc[0] = ((sc[0] as i8) - naf[i]) as u8;
+            // Divide by (w - 1)
+            for j in 0..31 {
+                sc[j] = (sc[j] >> (w - 1)) | sc[j + 1] << (8 - (w - 1));
+            }
+            sc[31] >>= w - 1;
+        }
+        naf[len - 1] = sc[0] as i8;
+    }
+
+    fn precompute(&self, table: &mut [G2Affine]) {
+        let mut proj_table = [G2Projective::identity(); 1 << (G2_WIDTH - 2)];
+        let double_point = self.double();
+        proj_table[0] = self.clone();
+        for i in 1..table.len() {
+            proj_table[i] = proj_table[i - 1] + double_point;
+        }
+        G2Projective::batch_normalize(&proj_table[1..], &mut table[1..]);
+    }
+
+    fn linear_pass(&self, index: u8, table: &[G2Affine]) -> G2Affine {
+        // Scan table of points to read table[index]
+        let mut tmp = G2Affine::identity();
+        for j in 0..table.len() as u8 {
+            let eq = j ^ index;
+            let bit4 = (eq & 0xF) | (eq >> 4);
+            let bit2 = (bit4 & 0x3) | (bit4 >> 2);
+            let bit1 = (bit2 & 0x1) | (bit2 >> 1);
+            tmp = G2Affine::conditional_select(&tmp, &table[j as usize], !Choice::from(bit1));
+        }
+        tmp
+    }
+
+    fn multiply(&self, by: &[u8; 32]) -> G2Projective {
         let mut acc = G2Projective::identity();
 
-        // This is a simple double-and-add implementation of point
-        // multiplication, moving from most significant to least
-        // significant bit of the scalar.
-        //
-        // We skip the leading bit because it's always unset for Fq
-        // elements.
-        for bit in by
-            .iter()
-            .rev()
-            .flat_map(|byte| (0..8).rev().map(move |i| Choice::from((byte >> i) & 1u8)))
-            .skip(1)
-        {
-            acc = acc.double();
-            acc = G2Projective::conditional_select(&acc, &(acc + self), bit);
+        // Length of recoding is ceil(scalar bitlength, w - 1).
+        let len = 1 + (256-1)/(G2_WIDTH - 1) as usize;
+        // Size of precomputation table is 2^(w-2).
+        let mut table = [G2Affine::from(self); 1 << (G2_WIDTH - 2)];
+
+        // Allocate longest possible vector, recode scalar and precompute table.
+        let mut naf = [0 as i8; 256];
+        if G2_WIDTH > 2 {
+            self.precompute(&mut table);
         }
 
-        acc
+        let mut sc = by.clone();
+        let bit0 = sc[0] & 1u8;
+        sc[0] |= 1;
+
+        self.regular_recoding(&mut naf, &mut sc, G2_WIDTH);
+
+        for i in (0..len).rev() {
+            for _ in 1..G2_WIDTH {
+                acc = acc.double();
+            }
+            let sign = naf[i] >> 7;
+            let index = ((naf[i] ^ sign) - sign) >> 1;
+            let mut t = self.linear_pass(index as u8, &table);
+            // Negate point if naf[i] is negative.
+            t = G2Affine::conditional_select(&t, &-t, Choice::from(-sign as u8));
+            acc = acc + t;
+        }
+        // If the scalar was even, fix result here.
+        G2Projective::conditional_select(&acc, &(acc - table[0]), Choice::from(1u8 - bit0))
     }
 
     #[cfg(feature = "endo")]
