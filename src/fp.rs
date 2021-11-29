@@ -227,7 +227,7 @@ impl Fp {
         res
     }
 
-    pub(crate) fn random(mut rng: impl RngCore) -> Fp {
+    pub fn random(mut rng: impl RngCore) -> Fp {
         let mut bytes = [0u8; 96];
         rng.fill_bytes(&mut bytes);
 
@@ -340,7 +340,6 @@ impl Fp {
         CtOption::new(sqrt, sqrt.square().ct_eq(self))
     }
 
-    #[inline]
     /// Computes the multiplicative inverse of this field
     /// element, returning None in the case that this element
     /// is zero.
@@ -379,7 +378,6 @@ impl Fp {
         Fp([r0, r1, r2, r3, r4, r5])
     }
 
-    #[inline]
     pub const fn add(&self, rhs: &Fp) -> Fp {
         let (d0, carry) = adc(self.0[0], rhs.0[0], 0);
         let (d1, carry) = adc(self.0[1], rhs.0[1], carry);
@@ -393,7 +391,6 @@ impl Fp {
         (&Fp([d0, d1, d2, d3, d4, d5])).subtract_p()
     }
 
-    #[inline]
     pub const fn neg(&self) -> Fp {
         let (d0, borrow) = sbb(MODULUS[0], self.0[0], 0);
         let (d1, borrow) = sbb(MODULUS[1], self.0[1], borrow);
@@ -418,7 +415,6 @@ impl Fp {
         ])
     }
 
-    #[inline]
     pub const fn sub(&self, rhs: &Fp) -> Fp {
         (&rhs.neg()).add(self)
     }
@@ -501,7 +497,6 @@ impl Fp {
         (&Fp([r6, r7, r8, r9, r10, r11])).subtract_p()
     }
 
-    #[inline]
     pub const fn mul(&self, rhs: &Fp) -> Fp {
         let (t0, carry) = mac(0, self.0[0], rhs.0[0], 0);
         let (t1, carry) = mac(0, self.0[0], rhs.0[1], carry);
@@ -549,7 +544,6 @@ impl Fp {
     }
 
     /// Squares this element.
-    #[inline]
     pub const fn square(&self) -> Self {
         let (t1, carry) = mac(0, self.0[0], self.0[1], 0);
         let (t2, carry) = mac(0, self.0[0], self.0[2], carry);

@@ -62,6 +62,10 @@ version = "1.4"
 default-features = false
 optional = true
 
+[dependencies.criterion]
+version = "0.3"
+features=['real_blackbox']
+
 [features]
 default = ["groups", "pairings", "alloc", "bits"]
 bits = ["ff/bits"]
@@ -70,3 +74,6 @@ pairings = ["groups", "pairing"]
 alloc = ["group/alloc"]
 experimental = ["digest"]
 nightly = ["subtle/nightly"]
+
+[profile.release]
+debug = 1
